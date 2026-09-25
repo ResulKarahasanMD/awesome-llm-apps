@@ -1,10 +1,10 @@
 from textwrap import dedent
 from agno.agent import Agent
 from agno.run.agent import RunOutput
-from agno.tools.serpapi import SerpApiTools
+from agno.tools.websearch import WebSearchTools
 import streamlit as st
 import re
-from agno.models.openai import OpenAIChat
+from agno.models.ollama import Ollama
 from icalendar import Calendar, Event
 from datetime import datetime, timedelta
 
@@ -60,99 +60,96 @@ def generate_ics_content(plan_text:str, start_date: datetime = None) -> bytes:
 
 # Set up the Streamlit app
 st.title("AI Travel Planner ")
-st.caption("Plan your next adventure with AI Travel Planner by researching and planning a personalized itinerary on autopilot using GPT-4o")
+st.caption("Plan your next adventure with AI Travel Planner by researching and planning a personalized itinerary on autopilot using Ollama")
 
 # Initialize session state to store the generated itinerary
 if 'itinerary' not in st.session_state:
     st.session_state.itinerary = None
 
-# Get OpenAI API key from user
-openai_api_key = st.text_input("Enter OpenAI API Key to access GPT-4o", type="password")
+# Get Ollama API key from user (leave blank for local Ollama)
+ollama_api_key = st.text_input("Enter Ollama API Key (leave blank for local Ollama)", type="password")
 
-# Get SerpAPI key from the user
-serp_api_key = st.text_input("Enter Serp API Key for Search functionality", type="password")
+# DuckDuckGo search is free — no API key needed
+researcher = Agent(
+    name="Researcher",
+    role="Searches for travel destinations, activities, and accommodations based on user preferences",
+    model=Ollama(id="deepseek-v4-pro:cloud", api_key=ollama_api_key if ollama_api_key else None),
+    description=dedent(
+        """\
+    You are a world-class travel researcher. Given a travel destination and the number of days the user wants to travel for,
+    generate a list of search terms for finding relevant travel activities and accommodations.
+    Then search the web for each term, analyze the results, and return the 10 most relevant results.
+    """
+    ),
+    instructions=[
+        "Given a travel destination and the number of days the user wants to travel for, first generate a list of 3 search terms related to that destination and the number of days.",
+        "For each search term, `web_search` and analyze the results."
+        "From the results of all searches, return the 10 most relevant results to the user's preferences.",
+        "Remember: the quality of the results is important.",
+    ],
+    tools=[WebSearchTools()],
+    add_datetime_to_context=True,
+)
+planner = Agent(
+    name="Planner",
+    role="Generates a draft itinerary based on user preferences and research results",
+    model=Ollama(id="deepseek-v4-pro:cloud", api_key=ollama_api_key if ollama_api_key else None),
+    description=dedent(
+        """\
+    You are a senior travel planner. Given a travel destination, the number of days the user wants to travel for, and a list of research results,
+    your goal is to generate a draft itinerary that meets the user's needs and preferences.
+    """
+    ),
+    instructions=[
+        "Given a travel destination, the number of days the user wants to travel for, and a list of research results, generate a draft itinerary that includes suggested activities and accommodations.",
+        "Ensure the itinerary is well-structured, informative, and engaging.",
+        "Ensure you provide a nuanced and balanced itinerary, quoting facts where possible.",
+        "Remember: the quality of the itinerary is important.",
+        "Focus on clarity, coherence, and overall quality.",
+        "Never make up facts or plagiarize. Always provide proper attribution.",
+    ],
+    add_datetime_to_context=True,
+)
 
-if openai_api_key and serp_api_key:
-    researcher = Agent(
-        name="Researcher",
-        role="Searches for travel destinations, activities, and accommodations based on user preferences",
-        model=OpenAIChat(id="gpt-4o", api_key=openai_api_key),
-        description=dedent(
-            """\
-        You are a world-class travel researcher. Given a travel destination and the number of days the user wants to travel for,
-        generate a list of search terms for finding relevant travel activities and accommodations.
-        Then search the web for each term, analyze the results, and return the 10 most relevant results.
-        """
-        ),
-        instructions=[
-            "Given a travel destination and the number of days the user wants to travel for, first generate a list of 3 search terms related to that destination and the number of days.",
-            "For each search term, `search_google` and analyze the results."
-            "From the results of all searches, return the 10 most relevant results to the user's preferences.",
-            "Remember: the quality of the results is important.",
-        ],
-        tools=[SerpApiTools(api_key=serp_api_key)],
-        add_datetime_to_context=True,
-    )
-    planner = Agent(
-        name="Planner",
-        role="Generates a draft itinerary based on user preferences and research results",
-        model=OpenAIChat(id="gpt-4o", api_key=openai_api_key),
-        description=dedent(
-            """\
-        You are a senior travel planner. Given a travel destination, the number of days the user wants to travel for, and a list of research results,
-        your goal is to generate a draft itinerary that meets the user's needs and preferences.
-        """
-        ),
-        instructions=[
-            "Given a travel destination, the number of days the user wants to travel for, and a list of research results, generate a draft itinerary that includes suggested activities and accommodations.",
-            "Ensure the itinerary is well-structured, informative, and engaging.",
-            "Ensure you provide a nuanced and balanced itinerary, quoting facts where possible.",
-            "Remember: the quality of the itinerary is important.",
-            "Focus on clarity, coherence, and overall quality.",
-            "Never make up facts or plagiarize. Always provide proper attribution.",
-        ],
-        add_datetime_to_context=True,
-    )
+# Input fields for the user's destination and the number of days they want to travel for
+destination = st.text_input("Where do you want to go?")
+num_days = st.number_input("How many days do you want to travel for?", min_value=1, max_value=30, value=7)
 
-    # Input fields for the user's destination and the number of days they want to travel for
-    destination = st.text_input("Where do you want to go?")
-    num_days = st.number_input("How many days do you want to travel for?", min_value=1, max_value=30, value=7)
+col1, col2 = st.columns(2)
 
-    col1, col2 = st.columns(2)
+with col1:
+    if st.button("Generate Itinerary"):
+        with st.spinner("Researching your destination..."):
+            # First get research results
+            research_results: RunOutput = researcher.run(f"Research {destination} for a {num_days} day trip", stream=False)
 
-    with col1:
-        if st.button("Generate Itinerary"):
-            with st.spinner("Researching your destination..."):
-                # First get research results
-                research_results: RunOutput = researcher.run(f"Research {destination} for a {num_days} day trip", stream=False)
-
-                # Show research progress
-                st.write(" Research completed")
-                
-            with st.spinner("Creating your personalized itinerary..."):
-                # Pass research results to planner
-                prompt = f"""
-                Destination: {destination}
-                Duration: {num_days} days
-                Research Results: {research_results.content}
-                
-                Please create a detailed itinerary based on this research.
-                """
-                response: RunOutput = planner.run(prompt, stream=False)
-                # Store the response in session state
-                st.session_state.itinerary = response.content
-                st.write(response.content)
-    
-    # Only show download button if there's an itinerary
-    with col2:
-        if st.session_state.itinerary:
-            # Generate the ICS file
-            ics_content = generate_ics_content(st.session_state.itinerary)
+            # Show research progress
+            st.write(" Research completed")
             
-            # Provide the file for download
-            st.download_button(
-                label="Download Itinerary as Calendar (.ics)",
-                data=ics_content,
-                file_name="travel_itinerary.ics",
-                mime="text/calendar"
-            )
+        with st.spinner("Creating your personalized itinerary..."):
+            # Pass research results to planner
+            prompt = f"""
+            Destination: {destination}
+            Duration: {num_days} days
+            Research Results: {research_results.content}
+            
+            Please create a detailed itinerary based on this research.
+            """
+            response: RunOutput = planner.run(prompt, stream=False)
+            # Store the response in session state
+            st.session_state.itinerary = response.content
+            st.write(response.content)
+
+# Only show download button if there's an itinerary
+with col2:
+    if st.session_state.itinerary:
+        # Generate the ICS file
+        ics_content = generate_ics_content(st.session_state.itinerary)
+        
+        # Provide the file for download
+        st.download_button(
+            label="Download Itinerary as Calendar (.ics)",
+            data=ics_content,
+            file_name="travel_itinerary.ics",
+            mime="text/calendar"
+        )
